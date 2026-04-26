@@ -1,15 +1,25 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../core/theme/app_theme.dart';
+import '../../../hub/providers/chat_provider.dart';
 
 class RouteDetailScreen extends ConsumerWidget {
   const RouteDetailScreen({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final routeInfo = ref.watch(activeRouteInfoProvider);
+
+    if (routeInfo == null) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Rota Detayı')),
+        body: const Center(child: Text('Henüz aktif bir rota bulunamadı.', style: TextStyle(color: AppTheme.textSecondary))),
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Rota Detayları', style: TextStyle(fontWeight: FontWeight.bold)),
+        title: const Text('Navigasyon Özeti', style: TextStyle(fontWeight: FontWeight.bold)),
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16.0),
@@ -17,26 +27,30 @@ class RouteDetailScreen extends ConsumerWidget {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Container(
-              height: 200,
+              height: 220,
               decoration: BoxDecoration(
                 color: AppTheme.surface,
                 borderRadius: BorderRadius.circular(16),
                 border: Border.all(color: Colors.white10),
+                image: const DecorationImage(
+                  image: NetworkImage('https://maps.googleapis.com/maps/api/staticmap?size=600x300&maptype=roadmap&style=feature:all|element:all|invert_lightness:true'),
+                  fit: BoxFit.cover,
+                  opacity: 0.3,
+                ),
               ),
               child: const Center(
-                child: Icon(Icons.map, size: 64, color: AppTheme.textSecondary),
+                child: Icon(Icons.navigation_rounded, size: 64, color: AppTheme.accent),
               ),
             ),
             const SizedBox(height: 24),
-            const Text('Kadıköy - Beşiktaş (Alternatif 1)', style: TextStyle(color: AppTheme.textPrimary, fontSize: 22, fontWeight: FontWeight.bold)),
+            Text(routeInfo['title'] ?? 'Aktif Rota', style: const TextStyle(color: AppTheme.textPrimary, fontSize: 22, fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
-            const Text('Tahmini Süre: 45 dk • Mesafe: 18 km', style: TextStyle(color: AppTheme.accent, fontSize: 16)),
+            Text('Tahmini Süre: ${routeInfo['duration']} dk • Mesafe: ${routeInfo['distance']} km', style: const TextStyle(color: AppTheme.accent, fontSize: 16)),
             const SizedBox(height: 24),
             const Text('GÜZERGAH ÖZETİ', style: TextStyle(color: AppTheme.textSecondary, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
             const SizedBox(height: 12),
-            _buildTimelineStep('Başlangıç', 'Kadıköy Meydan', isFirst: true),
-            _buildTimelineStep('Ara Nokta', 'Avrasya Tüneli', isMiddle: true),
-            _buildTimelineStep('Varış', 'Beşiktaş İskele', isLast: true),
+            _buildTimelineStep('Mevcut Konum', 'Başlangıç Noktası', isFirst: true),
+            _buildTimelineStep('Hedef', routeInfo['title'] ?? 'Varış Noktası', isLast: true),
             const SizedBox(height: 32),
             ElevatedButton(
               onPressed: () {},

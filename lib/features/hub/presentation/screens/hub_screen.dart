@@ -4,8 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
-import '../../../../core/theme/app_theme.dart';
-import '../../providers/chat_provider.dart';
+import 'package:geointel_mobile/core/theme/app_theme.dart';
+import 'package:geointel_mobile/features/hub/providers/chat_provider.dart';
 
 class HubScreen extends ConsumerStatefulWidget {
   const HubScreen({super.key});
@@ -271,7 +271,7 @@ class _HubScreenState extends ConsumerState<HubScreen> {
   Widget build(BuildContext context) {
     final chatState = ref.watch(chatProvider);
 
-    ref.listen(chatProvider, (previous, next) {
+    ref.listen<ChatState>(chatProvider, (previous, next) {
       if (_mapController == null) return;
       
       bool markersChanged = previous?.markers.length != next.markers.length;
@@ -306,21 +306,39 @@ class _HubScreenState extends ConsumerState<HubScreen> {
         }
 
         if (hasPoints) {
-          if (minLat == maxLat || minLng == maxLng) {
-             _mapController!.animateCamera(CameraUpdate.newLatLngZoom(LatLng(minLat, minLng), 14.0));
-          } else {
-             _mapController!.animateCamera(CameraUpdate.newLatLngBounds(
-              LatLngBounds(southwest: LatLng(minLat, minLng), northeast: LatLng(maxLat, maxLng)),
-              50.0,
-            ));
-          }
+          // 🚨 FIX: Web tarafında harita henüz hazır değilken animasyon yapılması çökme yapabilir.
+          // Küçük bir gecikme ve try-catch ile koruma sağlıyoruz.
+          Future.delayed(const Duration(milliseconds: 300), () {
+            if (_mapController == null) return;
+            try {
+              if (minLat == maxLat || minLng == maxLng) {
+                _mapController!.animateCamera(CameraUpdate.newLatLngZoom(LatLng(minLat, minLng), 14.0));
+              } else {
+                final bounds = LatLngBounds(
+                  southwest: LatLng(minLat, minLng),
+                  northeast: LatLng(maxLat, maxLng),
+                );
+                
+                _mapController!.animateCamera(CameraUpdate.newLatLngBounds(bounds, 50.0))
+                .catchError((e) {
+                   // Fallback: Bounds başarısız olursa (Web-Specific error) merkeze zoom yap
+                   final centerLat = (minLat + maxLat) / 2;
+                   final centerLng = (minLng + maxLng) / 2;
+                   _mapController!.animateCamera(CameraUpdate.newLatLngZoom(LatLng(centerLat, centerLng), 13.0));
+                   return null;
+                });
+              }
+            } catch (e) {
+              debugPrint('⚠️ Harita odaklanırken hata oluştu (Web-Safe): $e');
+            }
+          });
         }
       }
     });
 
-    ref.listen(selectedPoiProvider, (previous, next) {
+    ref.listen<Map<String, dynamic>?>(selectedPoiProvider, (previous, next) {
       if (next != null && context.mounted) {
-        _showPoiDetailModal(context, next as Map<String, dynamic>);
+        _showPoiDetailModal(context, next);
         // Clear it immediately so it can be opened again if tapped
         Future.delayed(Duration.zero, () {
           ref.read(selectedPoiProvider.notifier).setPoi(null);
@@ -598,8 +616,18 @@ class _HubScreenState extends ConsumerState<HubScreen> {
                       ],
                     ),
                     onPressed: () {
-                      _textController.text = card['label'] ?? '';
-                      _sendMessage();
+                      final action = card['action']?.toString();
+                      final label = card['label']?.toString() ?? '';
+                      
+                      if (action == 'start_navigation') {
+                        context.push('/route_detail');
+                      } else {
+                        // AI'ya mesaj gönder: 'action' varsa onu, yoksa 'label'ı gönder
+                        final messageToSend = (action != null && action.length > 3) ? action : label;
+                        if (messageToSend.isNotEmpty) {
+                          ref.read(chatProvider.notifier).sendMessage(messageToSend);
+                        }
+                      }
                     },
                   );
                 }).toList(),

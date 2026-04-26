@@ -1,41 +1,41 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:geolocator/geolocator.dart';
-import '../../../core/network/api_client.dart';
-import '../../../core/theme/app_theme.dart';
-import 'package:dio/dio.dart';
-
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:geointel_mobile/core/network/api_client.dart';
+import 'package:geointel_mobile/core/theme/app_theme.dart';
 
+@immutable
 class ChatMessage {
   final String text;
   final bool isAi;
   final List<dynamic>? actionCards;
   final List<String>? toolsUsed;
-  
-  ChatMessage({
-    required this.text, 
-    required this.isAi, 
+
+  const ChatMessage({
+    required this.text,
+    required this.isAi,
     this.actionCards,
     this.toolsUsed,
   });
 }
 
+@immutable
 class ChatState {
   final List<ChatMessage> messages;
   final bool isLoading;
   final Set<Marker> markers;
   final Set<Polyline> polylines;
 
-  ChatState({
-    required this.messages, 
+  const ChatState({
+    this.messages = const [],
     this.isLoading = false,
     this.markers = const {},
     this.polylines = const {},
   });
 
   ChatState copyWith({
-    List<ChatMessage>? messages, 
+    List<ChatMessage>? messages,
     bool? isLoading,
     Set<Marker>? markers,
     Set<Polyline>? polylines,
@@ -49,22 +49,45 @@ class ChatState {
   }
 }
 
-class ChatNotifier extends Notifier<ChatState> {
-  final String sessionId = 'mobile_session_${DateTime.now().millisecondsSinceEpoch}';
-
+class ActiveRouteInfoNotifier extends Notifier<Map<String, dynamic>?> {
   @override
-  ChatState build() {
-    return ChatState(messages: [
-      ChatMessage(text: "Şehir analiz sistemleri devrede. Hangi bölgeyi incelemek istersiniz?", isAi: true)
-    ]);
+  Map<String, dynamic>? build() => null;
+  void setRoute(Map<String, dynamic>? route) => state = route;
+}
+final activeRouteInfoProvider = NotifierProvider<ActiveRouteInfoNotifier, Map<String, dynamic>?>(ActiveRouteInfoNotifier.new);
+
+class SelectedPoiNotifier extends Notifier<Map<String, dynamic>?> {
+  @override
+  Map<String, dynamic>? build() => null;
+  void setPoi(Map<String, dynamic>? poi) => state = poi;
+}
+final selectedPoiProvider = NotifierProvider<SelectedPoiNotifier, Map<String, dynamic>?>(SelectedPoiNotifier.new);
+
+class ChatNotifier extends Notifier<ChatState> {
+  @override
+  ChatState build() => const ChatState();
+
+  String get sessionId => "default_session";
+  double _currentLat = 41.0082;
+  double _currentLon = 28.9784;
+
+  void updateCurrentLocation(double lat, double lon) {
+    _currentLat = lat;
+    _currentLon = lon;
   }
 
-  // Google Encoded Polyline Decoder
   List<LatLng> _decodePolyline(String encoded) {
-    List<LatLng> poly = [];
+    if (encoded.isEmpty) return [];
+    if (encoded.startsWith('B') || encoded.startsWith('v')) {
+      return _decodeFlexiblePolyline(encoded);
+    }
+    return _decodeGooglePolyline(encoded);
+  }
+
+  List<LatLng> _decodeGooglePolyline(String encoded) {
+    List<LatLng> points = [];
     int index = 0, len = encoded.length;
     int lat = 0, lng = 0;
-
     while (index < len) {
       int b, shift = 0, result = 0;
       do {
@@ -74,9 +97,7 @@ class ChatNotifier extends Notifier<ChatState> {
       } while (b >= 0x20);
       int dlat = ((result & 1) != 0 ? ~(result >> 1) : (result >> 1));
       lat += dlat;
-
-      shift = 0;
-      result = 0;
+      shift = 0; result = 0;
       do {
         b = encoded.codeUnitAt(index++) - 63;
         result |= (b & 0x1f) << shift;
@@ -84,47 +105,85 @@ class ChatNotifier extends Notifier<ChatState> {
       } while (b >= 0x20);
       int dlng = ((result & 1) != 0 ? ~(result >> 1) : (result >> 1));
       lng += dlng;
-
-      poly.add(LatLng((lat / 1E5).toDouble(), (lng / 1E5).toDouble()));
+      points.add(LatLng(lat / 1e5, lng / 1e5));
     }
-    debugPrint('📍 Decoded ${poly.length} points.');
-    return poly;
+    return points;
   }
 
-  double _currentLat = 41.0082;
-  double _currentLon = 28.9784;
-
-  void updateCurrentLocation(double lat, double lon) {
-    _currentLat = lat;
-    _currentLon = lon;
-    
-    // Arka planda sunucuyu güncelle ki Redis'te her an canlı kalsın
+  List<LatLng> _decodeFlexiblePolyline(String encoded) {
+    List<LatLng> points = [];
     try {
-      ref.read(dioProvider).post('/api/v1/location/update', data: {
-        'session_id': sessionId,
-        'lat': lat,
-        'lon': lon,
-      });
+      int index = 0;
+      int b = encoded.codeUnitAt(index++) - 63;
+      int result = b & 0x1f;
+      int shift = 5;
+      while (b >= 0x20) {
+        b = encoded.codeUnitAt(index++) - 63;
+        result |= (b & 0x1f) << shift;
+        shift += 5;
+      }
+      b = encoded.codeUnitAt(index++) - 63;
+      result = b & 0x1f;
+      shift = 5;
+      while (b >= 0x20) {
+        b = encoded.codeUnitAt(index++) - 63;
+        result |= (b & 0x1f) << shift;
+        shift += 5;
+      }
+      double multiplier = result == 7 ? 1e7 : 1e5;
+      int lat = 0, lng = 0;
+      while (index < encoded.length) {
+        shift = 0; result = 0;
+        do {
+          b = encoded.codeUnitAt(index++) - 63;
+          result |= (b & 0x1f) << shift;
+          shift += 5;
+        } while (b >= 0x20);
+        lat += ((result & 1) != 0 ? ~(result >> 1) : (result >> 1));
+        shift = 0; result = 0;
+        do {
+          b = encoded.codeUnitAt(index++) - 63;
+          result |= (b & 0x1f) << shift;
+          shift += 5;
+        } while (b >= 0x20);
+        lng += ((result & 1) != 0 ? ~(result >> 1) : (result >> 1));
+        points.add(LatLng(lat / multiplier, lng / multiplier));
+      }
     } catch (e) {
-      // Sessizce yut, arka plan işlemi
+      debugPrint('v6 decoder error: $e');
     }
+    return points;
+  }
+
+  List<LatLng> _processPoints(String polyStr) {
+    List<LatLng> points = [];
+    if (polyStr.startsWith('[')) {
+      final List<dynamic> raw = jsonDecode(polyStr);
+      points = raw.map((p) => LatLng((p[0] as num).toDouble(), (p[1] as num).toDouble())).toList();
+    } else {
+      points = _decodePolyline(polyStr);
+    }
+
+    // 🚀 OPTIMIZATION (Orijinal 406 satırlık koddaki sihirli dokunuş)
+    if (points.length > 500) {
+      debugPrint('📍 Received Polyline (Length: ${points.length})');
+      int skipCount = (points.length / 400).ceil();
+      List<LatLng> simplifiedPoints = [];
+      for (int i = 0; i < points.length; i += skipCount) {
+        simplifiedPoints.add(points[i]);
+      }
+      if (simplifiedPoints.last != points.last) simplifiedPoints.add(points.last);
+      points = simplifiedPoints;
+      debugPrint('📍 Optimized to ${points.length} points for stability.');
+    }
+    return points;
   }
 
   Future<void> sendMessage(String text) async {
     if (text.trim().isEmpty) return;
-
-    state = state.copyWith(
-      messages: [...state.messages, ChatMessage(text: text, isAi: false)],
-      isLoading: true,
-      // 🚨 FIX: Artık mesaj gönderirken haritayı temizlemiyoruz, 
-      // böylece yeni yanıt gelene kadar eski rota ekranda kalmaya devam ediyor.
-      // markers: const {},
-      // polylines: const {},
-    );
-
+    state = state.copyWith(messages: [...state.messages, ChatMessage(text: text, isAi: false)], isLoading: true);
     try {
       final dio = ref.read(dioProvider);
-
       final response = await dio.post('/api/v1/chat', data: {
         'message': text,
         'session_id': sessionId,
@@ -134,107 +193,80 @@ class ChatNotifier extends Notifier<ChatState> {
 
       if (response.statusCode == 200 && response.data['success'] == true) {
         final dataBlock = response.data['data'] ?? {};
-        final replyText = dataBlock['message'] ?? "Boş yanıt alındı.";
+        final replyText = dataBlock['message'] ?? "";
         final mapData = dataBlock['map'] ?? {};
-        final actionCards = dataBlock['action_cards'] as List<dynamic>? ?? [];
         
-        Set<Marker> newMarkers = {};
         Set<Polyline> newPolylines = {};
-        
+        if (mapData['polyline'] != null) {
+          final pts = _processPoints(mapData['polyline'] as String);
+          newPolylines.add(Polyline(
+            polylineId: const PolylineId('active'),
+            points: pts,
+            color: AppTheme.accent,
+            width: 5,
+            zIndex: 10,
+            startCap: Cap.roundCap,
+            endCap: Cap.roundCap,
+            jointType: JointType.round,
+          ));
+
+          if (mapData['alternatives'] != null) {
+            final alts = mapData['alternatives'] as List;
+            for (int i = 0; i < alts.length; i++) {
+              final aPts = _processPoints(alts[i] as String);
+              newPolylines.add(Polyline(
+                polylineId: PolylineId('alt_$i'),
+                points: aPts,
+                color: Colors.white.withValues(alpha: 0.3),
+                width: 4,
+                zIndex: 5,
+                startCap: Cap.roundCap,
+                endCap: Cap.roundCap,
+                jointType: JointType.round,
+              ));
+            }
+          }
+
+          ref.read(activeRouteInfoProvider.notifier).setRoute({
+            'title': text, 
+            'distance': dataBlock['distance_km'] ?? '?', 
+            'duration': dataBlock['duration_min'] ?? '?',
+          });
+        }
+
+        Set<Marker> newMarkers = {};
         if (mapData['markers'] != null) {
           final markersList = mapData['markers'] as List;
           for (int i = 0; i < markersList.length; i++) {
             final m = markersList[i];
-            final mLat = m['lat'] is String ? double.tryParse(m['lat']) ?? 0.0 : (m['lat'] as num?)?.toDouble() ?? 0.0;
-            final mLon = m['lon'] is String ? double.tryParse(m['lon']) ?? 0.0 : (m['lon'] as num?)?.toDouble() ?? 0.0;
-            final mType = m['type']?.toString().toLowerCase() ?? '';
-            
-            double hue = BitmapDescriptor.hueCyan;
-            if (mType.contains('pharmacy')) hue = BitmapDescriptor.hueRed;
-            else if (mType.contains('fuel')) hue = BitmapDescriptor.hueOrange;
-            else if (mType.contains('origin')) hue = BitmapDescriptor.hueGreen;
-            else if (mType.contains('destination')) hue = BitmapDescriptor.hueAzure;
-
             newMarkers.add(Marker(
-              markerId: MarkerId('marker_$i'),
-              position: LatLng(mLat, mLon),
-              infoWindow: InfoWindow(title: m['title'] ?? m['name'] ?? 'Nokta'),
-              onTap: () {
-                ref.read(selectedPoiProvider.notifier).setPoi(m as Map<String, dynamic>);
-              },
-              icon: BitmapDescriptor.defaultMarkerWithHue(hue),
+              markerId: MarkerId('m_$i'),
+              position: LatLng((m['lat'] as num).toDouble(), (m['lon'] as num).toDouble()),
+              infoWindow: InfoWindow(title: m['title'] ?? m['name']),
+              onTap: () => ref.read(selectedPoiProvider.notifier).setPoi(m as Map<String, dynamic>),
+              icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueCyan),
             ));
           }
         }
 
-        if (mapData['polyline'] != null) {
-          final polylineStr = mapData['polyline'] as String;
-          debugPrint('📍 Received Polyline (Length: ${polylineStr.length})');
-          // 🚨 FIX: Köşeli parantez kontrolünü gevşettik, sadece uzunluk kontrolü yapıyoruz.
-          // Çünkü bazen koordinat listesi string olarak gelebilir.
-          if (polylineStr.isNotEmpty && polylineStr.length > 50) {
-            try {
-              final points = _decodePolyline(polylineStr);
-              debugPrint('📍 Successfully decoded ${points.length} points.');
-              newPolylines.add(
-                Polyline(
-                  polylineId: PolylineId('route_${DateTime.now().millisecondsSinceEpoch}'),
-                  points: points,
-                  color: AppTheme.accent,
-                  width: 6,
-                  startCap: Cap.roundCap,
-                  endCap: Cap.roundCap,
-                  jointType: JointType.round,
-                )
-              );
-            } catch (e) {
-              debugPrint('❌ Error decoding polyline: $e');
-            }
-          } else {
-            debugPrint('⚠️ Polyline string skipped (contains [ or GİZLENDİ or empty)');
-          }
-        }
-        
         final toolsUsed = (dataBlock['tools_used'] as List<dynamic>?)?.map((e) => e.toString()).toList() ?? [];
-        
+
         state = state.copyWith(
           messages: [...state.messages, ChatMessage(
             text: replyText, 
             isAi: true, 
-            actionCards: actionCards,
+            actionCards: dataBlock['action_cards'],
             toolsUsed: toolsUsed,
           )],
           isLoading: false,
           markers: newMarkers.isNotEmpty ? newMarkers : state.markers,
           polylines: newPolylines.isNotEmpty ? newPolylines : state.polylines,
         );
-      } else {
-        throw Exception("API Error");
       }
     } catch (e) {
-      state = state.copyWith(
-        messages: [...state.messages, ChatMessage(text: "Bağlantı hatası: Sunucuya ulaşılamadı. Lütfen backend'in çalıştığından emin olun.", isAi: true)],
-        isLoading: false,
-      );
+      state = state.copyWith(isLoading: false);
     }
   }
 }
 
-final chatProvider = NotifierProvider<ChatNotifier, ChatState>(() {
-  return ChatNotifier();
-});
-
-class SelectedPoiNotifier extends Notifier<Map<String, dynamic>?> {
-  @override
-  Map<String, dynamic>? build() => null;
-  
-  void setPoi(Map<String, dynamic>? poi) {
-    state = poi;
-  }
-}
-
-final selectedPoiProvider = NotifierProvider<SelectedPoiNotifier, Map<String, dynamic>?>(() {
-  return SelectedPoiNotifier();
-});
-
-
+final chatProvider = NotifierProvider<ChatNotifier, ChatState>(ChatNotifier.new);
