@@ -55,7 +55,7 @@ class LoginScreen extends ConsumerWidget {
                 const SizedBox(height: 32),
                 ElevatedButton(
                   onPressed: () {
-                    context.go('/hub');
+                    context.go('/dashboard');
                   },
                   style: ElevatedButton.styleFrom(
                     padding: const EdgeInsets.symmetric(vertical: 16),

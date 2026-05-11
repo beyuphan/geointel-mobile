@@ -5,33 +5,31 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geointel_mobile/core/network/api_client.dart';
 import 'package:geointel_mobile/core/theme/app_theme.dart';
 
+// ─── Models ──────────────────────────────────────────────────────────────────
+
 @immutable
 class ChatMessage {
   final String text;
   final bool isAi;
-  final List<dynamic>? actionCards;
-  final List<String>? toolsUsed;
 
-  const ChatMessage({
-    required this.text,
-    required this.isAi,
-    this.actionCards,
-    this.toolsUsed,
-  });
+  const ChatMessage({required this.text, required this.isAi});
 }
 
-@immutable
 class ChatState {
   final List<ChatMessage> messages;
   final bool isLoading;
   final Set<Marker> markers;
   final Set<Polyline> polylines;
+  final Map<String, dynamic>? poiOverlay;
+  final double? distanceKm;
 
   const ChatState({
     this.messages = const [],
     this.isLoading = false,
     this.markers = const {},
     this.polylines = const {},
+    this.poiOverlay,
+    this.distanceKm,
   });
 
   ChatState copyWith({
@@ -39,14 +37,16 @@ class ChatState {
     bool? isLoading,
     Set<Marker>? markers,
     Set<Polyline>? polylines,
-  }) {
-    return ChatState(
-      messages: messages ?? this.messages,
-      isLoading: isLoading ?? this.isLoading,
-      markers: markers ?? this.markers,
-      polylines: polylines ?? this.polylines,
-    );
-  }
+    Map<String, dynamic>? poiOverlay,
+    double? distanceKm,
+  }) => ChatState(
+    messages: messages ?? this.messages,
+    isLoading: isLoading ?? this.isLoading,
+    markers: markers ?? this.markers,
+    polylines: polylines ?? this.polylines,
+    poiOverlay: poiOverlay, // Don't preserve old overlay, explicit override
+    distanceKm: distanceKm ?? this.distanceKm,
+  );
 }
 
 class ActiveRouteInfoNotifier extends Notifier<Map<String, dynamic>?> {
@@ -54,219 +54,208 @@ class ActiveRouteInfoNotifier extends Notifier<Map<String, dynamic>?> {
   Map<String, dynamic>? build() => null;
   void setRoute(Map<String, dynamic>? route) => state = route;
 }
-final activeRouteInfoProvider = NotifierProvider<ActiveRouteInfoNotifier, Map<String, dynamic>?>(ActiveRouteInfoNotifier.new);
+
+final activeRouteInfoProvider =
+    NotifierProvider<ActiveRouteInfoNotifier, Map<String, dynamic>?>(
+        ActiveRouteInfoNotifier.new);
+
+// ─── Secondary Providers ──────────────────────────────────────────────────────
 
 class SelectedPoiNotifier extends Notifier<Map<String, dynamic>?> {
   @override
   Map<String, dynamic>? build() => null;
   void setPoi(Map<String, dynamic>? poi) => state = poi;
 }
-final selectedPoiProvider = NotifierProvider<SelectedPoiNotifier, Map<String, dynamic>?>(SelectedPoiNotifier.new);
+
+final selectedPoiProvider =
+    NotifierProvider<SelectedPoiNotifier, Map<String, dynamic>?>(
+        SelectedPoiNotifier.new);
+
+// ─── Chat Notifier ────────────────────────────────────────────────────────────
 
 class ChatNotifier extends Notifier<ChatState> {
   @override
   ChatState build() => const ChatState();
 
-  String get sessionId => "default_session";
-  double _currentLat = 41.0082;
-  double _currentLon = 28.9784;
+  final String sessionId = 'default_session';
+  double _lat = 41.0082;
+  double _lon = 28.9784;
 
   void updateCurrentLocation(double lat, double lon) {
-    _currentLat = lat;
-    _currentLon = lon;
+    _lat = lat;
+    _lon = lon;
   }
 
-  List<LatLng> _decodePolyline(String encoded) {
-    if (encoded.isEmpty) return [];
-    if (encoded.startsWith('B') || encoded.startsWith('v')) {
-      return _decodeFlexiblePolyline(encoded);
-    }
-    return _decodeGooglePolyline(encoded);
-  }
+  // ── Polyline decode ──────────────────────────────────────────────────────
 
-  List<LatLng> _decodeGooglePolyline(String encoded) {
+  List<LatLng> _processPolyline(String raw) {
     List<LatLng> points = [];
-    int index = 0, len = encoded.length;
-    int lat = 0, lng = 0;
-    while (index < len) {
+
+    // Backend JSON list formatı: [[lat,lon],...]
+    if (raw.startsWith('[')) {
+      try {
+        final list = jsonDecode(raw) as List;
+        points = list
+            .map((p) => LatLng((p[0] as num).toDouble(), (p[1] as num).toDouble()))
+            .toList();
+      } catch (_) {}
+    } else {
+      // Google v5 encoded polyline
+      points = _decodeGoogle(raw);
+    }
+
+    // Simplify if too many points
+    if (points.length > 500) {
+      final step = (points.length / 400).ceil();
+      final simplified = <LatLng>[];
+      for (int i = 0; i < points.length; i += step) {
+        simplified.add(points[i]);
+      }
+      if (simplified.last != points.last) simplified.add(points.last);
+      return simplified;
+    }
+    return points;
+  }
+
+  List<LatLng> _decodeGoogle(String encoded) {
+    final points = <LatLng>[];
+    int index = 0, lat = 0, lng = 0;
+    while (index < encoded.length) {
       int b, shift = 0, result = 0;
       do {
         b = encoded.codeUnitAt(index++) - 63;
         result |= (b & 0x1f) << shift;
         shift += 5;
       } while (b >= 0x20);
-      int dlat = ((result & 1) != 0 ? ~(result >> 1) : (result >> 1));
-      lat += dlat;
+      lat += (result & 1) != 0 ? ~(result >> 1) : (result >> 1);
       shift = 0; result = 0;
       do {
         b = encoded.codeUnitAt(index++) - 63;
         result |= (b & 0x1f) << shift;
         shift += 5;
       } while (b >= 0x20);
-      int dlng = ((result & 1) != 0 ? ~(result >> 1) : (result >> 1));
-      lng += dlng;
+      lng += (result & 1) != 0 ? ~(result >> 1) : (result >> 1);
       points.add(LatLng(lat / 1e5, lng / 1e5));
     }
     return points;
   }
 
-  List<LatLng> _decodeFlexiblePolyline(String encoded) {
-    List<LatLng> points = [];
-    try {
-      int index = 0;
-      int b = encoded.codeUnitAt(index++) - 63;
-      int result = b & 0x1f;
-      int shift = 5;
-      while (b >= 0x20) {
-        b = encoded.codeUnitAt(index++) - 63;
-        result |= (b & 0x1f) << shift;
-        shift += 5;
-      }
-      b = encoded.codeUnitAt(index++) - 63;
-      result = b & 0x1f;
-      shift = 5;
-      while (b >= 0x20) {
-        b = encoded.codeUnitAt(index++) - 63;
-        result |= (b & 0x1f) << shift;
-        shift += 5;
-      }
-      double multiplier = result == 7 ? 1e7 : 1e5;
-      int lat = 0, lng = 0;
-      while (index < encoded.length) {
-        shift = 0; result = 0;
-        do {
-          b = encoded.codeUnitAt(index++) - 63;
-          result |= (b & 0x1f) << shift;
-          shift += 5;
-        } while (b >= 0x20);
-        lat += ((result & 1) != 0 ? ~(result >> 1) : (result >> 1));
-        shift = 0; result = 0;
-        do {
-          b = encoded.codeUnitAt(index++) - 63;
-          result |= (b & 0x1f) << shift;
-          shift += 5;
-        } while (b >= 0x20);
-        lng += ((result & 1) != 0 ? ~(result >> 1) : (result >> 1));
-        points.add(LatLng(lat / multiplier, lng / multiplier));
-      }
-    } catch (e) {
-      debugPrint('v6 decoder error: $e');
-    }
-    return points;
-  }
-
-  List<LatLng> _processPoints(String polyStr) {
-    List<LatLng> points = [];
-    if (polyStr.startsWith('[')) {
-      final List<dynamic> raw = jsonDecode(polyStr);
-      points = raw.map((p) => LatLng((p[0] as num).toDouble(), (p[1] as num).toDouble())).toList();
-    } else {
-      points = _decodePolyline(polyStr);
-    }
-
-    // 🚀 OPTIMIZATION (Orijinal 406 satırlık koddaki sihirli dokunuş)
-    if (points.length > 500) {
-      debugPrint('📍 Received Polyline (Length: ${points.length})');
-      int skipCount = (points.length / 400).ceil();
-      List<LatLng> simplifiedPoints = [];
-      for (int i = 0; i < points.length; i += skipCount) {
-        simplifiedPoints.add(points[i]);
-      }
-      if (simplifiedPoints.last != points.last) simplifiedPoints.add(points.last);
-      points = simplifiedPoints;
-      debugPrint('📍 Optimized to ${points.length} points for stability.');
-    }
-    return points;
-  }
+  // ── Send message ─────────────────────────────────────────────────────────
 
   Future<void> sendMessage(String text) async {
     if (text.trim().isEmpty) return;
-    state = state.copyWith(messages: [...state.messages, ChatMessage(text: text, isAi: false)], isLoading: true);
+
+    state = state.copyWith(
+      messages: [...state.messages, ChatMessage(text: text, isAi: false)],
+      isLoading: true,
+    );
+
     try {
       final dio = ref.read(dioProvider);
       final response = await dio.post('/api/v1/chat', data: {
         'message': text,
         'session_id': sessionId,
-        'current_lat': _currentLat,
-        'current_lon': _currentLon,
+        'current_lat': _lat,
+        'current_lon': _lon,
       });
 
       if (response.statusCode == 200 && response.data['success'] == true) {
-        final dataBlock = response.data['data'] ?? {};
-        final replyText = dataBlock['message'] ?? "";
-        final mapData = dataBlock['map'] ?? {};
-        
-        Set<Polyline> newPolylines = {};
-        if (mapData['polyline'] != null) {
-          final pts = _processPoints(mapData['polyline'] as String);
-          newPolylines.add(Polyline(
-            polylineId: const PolylineId('active'),
-            points: pts,
-            color: AppTheme.accent,
-            width: 5,
-            zIndex: 10,
-            startCap: Cap.roundCap,
-            endCap: Cap.roundCap,
-            jointType: JointType.round,
-          ));
+        final data = response.data['data'] ?? {};
+        final replyText = data['message'] as String? ?? '';
+        final mapData = data['map'] as Map<String, dynamic>? ?? {};
+        final overlay = data['poi_overlay'] as Map<String, dynamic>?;
+        final dist = (data['distance_km'] as num?)?.toDouble();
 
-          if (mapData['alternatives'] != null) {
-            final alts = mapData['alternatives'] as List;
-            for (int i = 0; i < alts.length; i++) {
-              final aPts = _processPoints(alts[i] as String);
+        // ── Polylines ────────────────────────────────────────────────────
+        final newPolylines = <Polyline>{};
+        final polyStr = mapData['polyline'] as String?;
+        if (polyStr != null && polyStr.isNotEmpty) {
+          final pts = _processPolyline(polyStr);
+          if (pts.isNotEmpty) {
+            newPolylines.add(Polyline(
+              polylineId: const PolylineId('active'),
+              points: pts,
+              color: AppTheme.accent,
+              width: 5,
+              startCap: Cap.roundCap,
+              endCap: Cap.roundCap,
+              jointType: JointType.round,
+              zIndex: 10,
+            ));
+          }
+
+          // Alternatif rotalar
+          final alts = mapData['alternatives'] as List<dynamic>? ?? [];
+          for (int i = 0; i < alts.length; i++) {
+            final aPts = _processPolyline(alts[i] as String);
+            if (aPts.isNotEmpty) {
               newPolylines.add(Polyline(
                 polylineId: PolylineId('alt_$i'),
                 points: aPts,
-                color: Colors.white.withValues(alpha: 0.3),
-                width: 4,
+                color: Colors.white.withValues(alpha: 0.25),
+                width: 3,
                 zIndex: 5,
-                startCap: Cap.roundCap,
-                endCap: Cap.roundCap,
-                jointType: JointType.round,
               ));
             }
           }
-
-          ref.read(activeRouteInfoProvider.notifier).setRoute({
-            'title': text, 
-            'distance': dataBlock['distance_km'] ?? '?', 
-            'duration': dataBlock['duration_min'] ?? '?',
-          });
         }
 
-        Set<Marker> newMarkers = {};
-        if (mapData['markers'] != null) {
-          final markersList = mapData['markers'] as List;
-          for (int i = 0; i < markersList.length; i++) {
-            final m = markersList[i];
-            newMarkers.add(Marker(
-              markerId: MarkerId('m_$i'),
-              position: LatLng((m['lat'] as num).toDouble(), (m['lon'] as num).toDouble()),
-              infoWindow: InfoWindow(title: m['title'] ?? m['name']),
-              onTap: () => ref.read(selectedPoiProvider.notifier).setPoi(m as Map<String, dynamic>),
-              icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueCyan),
-            ));
-          }
-        }
+        // ── Markers ──────────────────────────────────────────────────────
+        final newMarkers = <Marker>{};
+        final markerList = mapData['markers'] as List<dynamic>? ?? [];
+        for (int i = 0; i < markerList.length; i++) {
+          final m = markerList[i] as Map<String, dynamic>;
+          final lat = (m['lat'] as num).toDouble();
+          final lon = (m['lon'] as num).toDouble();
+          final type = m['type'] as String? ?? 'poi';
 
-        final toolsUsed = (dataBlock['tools_used'] as List<dynamic>?)?.map((e) => e.toString()).toList() ?? [];
+          final hue = type == 'pharmacy'
+              ? BitmapDescriptor.hueGreen
+              : type == 'fuel_station'
+                  ? BitmapDescriptor.hueOrange
+                  : BitmapDescriptor.hueCyan;
+
+          newMarkers.add(Marker(
+            markerId: MarkerId('m_$i'),
+            position: LatLng(lat, lon),
+            infoWindow: InfoWindow(
+              title: m['title'] as String? ?? m['name'] as String? ?? 'Nokta',
+              snippet: m['snippet'] as String? ?? m['address'] as String?,
+            ),
+            icon: BitmapDescriptor.defaultMarkerWithHue(hue),
+            onTap: () => ref.read(selectedPoiProvider.notifier).setPoi(m),
+          ));
+        }
 
         state = state.copyWith(
-          messages: [...state.messages, ChatMessage(
-            text: replyText, 
-            isAi: true, 
-            actionCards: dataBlock['action_cards'],
-            toolsUsed: toolsUsed,
-          )],
+          messages: [
+            ...state.messages,
+            ChatMessage(text: replyText, isAi: true),
+          ],
           isLoading: false,
           markers: newMarkers.isNotEmpty ? newMarkers : state.markers,
           polylines: newPolylines.isNotEmpty ? newPolylines : state.polylines,
+          poiOverlay: overlay,
+          distanceKm: dist ?? state.distanceKm,
         );
+      } else {
+        _addError('Sunucudan geçersiz yanıt alındı.');
       }
     } catch (e) {
-      state = state.copyWith(isLoading: false);
+      _addError('Bağlantı hatası: ${e.toString().split('\n').first}');
     }
+  }
+
+  void _addError(String msg) {
+    state = state.copyWith(
+      messages: [
+        ...state.messages,
+        ChatMessage(text: '⚠️ $msg', isAi: true),
+      ],
+      isLoading: false,
+    );
   }
 }
 
-final chatProvider = NotifierProvider<ChatNotifier, ChatState>(ChatNotifier.new);
+final chatProvider =
+    NotifierProvider<ChatNotifier, ChatState>(ChatNotifier.new);
