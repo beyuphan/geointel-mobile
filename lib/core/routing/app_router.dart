@@ -8,6 +8,7 @@ import '../../features/locations/presentation/screens/saved_locations_screen.dar
 import '../../features/settings/presentation/screens/settings_screen.dart';
 import '../../features/dashboard/presentation/screens/dashboard_screen.dart';
 import '../../features/routing/presentation/screens/trip_setup_screen.dart';
+import '../../features/routing/presentation/screens/smart_trip_wizard.dart';
 import '../../features/routing/presentation/screens/route_detail_screen.dart';
 import '../../features/poi/presentation/screens/poi_detail_screen.dart';
 import '../../features/poi/presentation/screens/poi_selection_screen.dart';
@@ -51,6 +52,10 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/trip_setup',
         builder: (context, state) => const TripSetupScreen(),
+      ),
+      GoRoute(
+        path: '/trip_wizard',
+        builder: (context, state) => const SmartTripWizard(),
       ),
       GoRoute(
         path: '/poi_detail',

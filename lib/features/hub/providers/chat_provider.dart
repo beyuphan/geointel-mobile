@@ -81,6 +81,9 @@ class ChatNotifier extends Notifier<ChatState> {
   double _lat = 41.0082;
   double _lon = 28.9784;
 
+  double get currentLat => _lat;
+  double get currentLon => _lon;
+
   void updateCurrentLocation(double lat, double lon) {
     _lat = lat;
     _lon = lon;
@@ -140,6 +143,51 @@ class ChatNotifier extends Notifier<ChatState> {
     return points;
   }
 
+  // ── Plan Trip (Yapılandırılmış Yolculuk) ──────────────────────────────
+
+  Future<void> planTrip({
+    required String destination,
+    List<String> waypoints = const [],
+    double breakIntervalHours = 2.0,
+    String foodPreference = 'Fark etmez',
+    String foodLocation = 'Ortaları',
+    double fuelRemainingKm = 0,
+    String customNote = '',
+  }) async {
+    state = state.copyWith(
+      messages: [
+        ...state.messages,
+        ChatMessage(text: '🗺️ $destination rotam planlanıyor...', isAi: false),
+      ],
+      isLoading: true,
+    );
+
+    try {
+      final dio = ref.read(dioProvider);
+      final response = await dio.post('/api/v1/trip/plan', data: {
+        'origin': 'CURRENT_LOCATION',
+        'destination': destination,
+        'waypoints': waypoints,
+        'break_interval_hours': breakIntervalHours,
+        'food_preference': foodPreference,
+        'food_location': foodLocation,
+        'fuel_remaining_km': fuelRemainingKm,
+        'custom_note': customNote,
+        'session_id': sessionId,
+        'current_lat': _lat,
+        'current_lon': _lon,
+      });
+
+      if (response.statusCode == 200 && response.data['success'] == true) {
+        await _processResponse(response.data['data'] ?? {});
+      } else {
+        _addError('Rota planlanamadı.');
+      }
+    } catch (e) {
+      _addError('Bağlantı hatası: ${e.toString().split('\n').first}');
+    }
+  }
+
   // ── Send message ─────────────────────────────────────────────────────────
 
   Future<void> sendMessage(String text) async {
@@ -160,90 +208,100 @@ class ChatNotifier extends Notifier<ChatState> {
       });
 
       if (response.statusCode == 200 && response.data['success'] == true) {
-        final data = response.data['data'] ?? {};
-        final replyText = data['message'] as String? ?? '';
-        final mapData = data['map'] as Map<String, dynamic>? ?? {};
-        final overlay = data['poi_overlay'] as Map<String, dynamic>?;
-        final dist = (data['distance_km'] as num?)?.toDouble();
-
-        // ── Polylines ────────────────────────────────────────────────────
-        final newPolylines = <Polyline>{};
-        final polyStr = mapData['polyline'] as String?;
-        if (polyStr != null && polyStr.isNotEmpty) {
-          final pts = _processPolyline(polyStr);
-          if (pts.isNotEmpty) {
-            newPolylines.add(Polyline(
-              polylineId: const PolylineId('active'),
-              points: pts,
-              color: AppTheme.accent,
-              width: 5,
-              startCap: Cap.roundCap,
-              endCap: Cap.roundCap,
-              jointType: JointType.round,
-              zIndex: 10,
-            ));
-          }
-
-          // Alternatif rotalar
-          final alts = mapData['alternatives'] as List<dynamic>? ?? [];
-          for (int i = 0; i < alts.length; i++) {
-            final aPts = _processPolyline(alts[i] as String);
-            if (aPts.isNotEmpty) {
-              newPolylines.add(Polyline(
-                polylineId: PolylineId('alt_$i'),
-                points: aPts,
-                color: Colors.white.withValues(alpha: 0.25),
-                width: 3,
-                zIndex: 5,
-              ));
-            }
-          }
-        }
-
-        // ── Markers ──────────────────────────────────────────────────────
-        final newMarkers = <Marker>{};
-        final markerList = mapData['markers'] as List<dynamic>? ?? [];
-        for (int i = 0; i < markerList.length; i++) {
-          final m = markerList[i] as Map<String, dynamic>;
-          final lat = (m['lat'] as num).toDouble();
-          final lon = (m['lon'] as num).toDouble();
-          final type = m['type'] as String? ?? 'poi';
-
-          final hue = type == 'pharmacy'
-              ? BitmapDescriptor.hueGreen
-              : type == 'fuel_station'
-                  ? BitmapDescriptor.hueOrange
-                  : BitmapDescriptor.hueCyan;
-
-          newMarkers.add(Marker(
-            markerId: MarkerId('m_$i'),
-            position: LatLng(lat, lon),
-            infoWindow: InfoWindow(
-              title: m['title'] as String? ?? m['name'] as String? ?? 'Nokta',
-              snippet: m['snippet'] as String? ?? m['address'] as String?,
-            ),
-            icon: BitmapDescriptor.defaultMarkerWithHue(hue),
-            onTap: () => ref.read(selectedPoiProvider.notifier).setPoi(m),
-          ));
-        }
-
-        state = state.copyWith(
-          messages: [
-            ...state.messages,
-            ChatMessage(text: replyText, isAi: true),
-          ],
-          isLoading: false,
-          markers: newMarkers.isNotEmpty ? newMarkers : state.markers,
-          polylines: newPolylines.isNotEmpty ? newPolylines : state.polylines,
-          poiOverlay: overlay,
-          distanceKm: dist ?? state.distanceKm,
-        );
+        await _processResponse(response.data['data'] ?? {});
       } else {
         _addError('Sunucudan geçersiz yanıt alındı.');
       }
     } catch (e) {
       _addError('Bağlantı hatası: ${e.toString().split('\n').first}');
     }
+  }
+
+  /// Dışarıdan (POI seçim ekranı vb.) gelen hazır API yanıtını state'e yaz.
+  /// LLM roundtrip olmadan doğrudan state güncelleme.
+  Future<void> processExternalResponse(Map<String, dynamic> data) async {
+    await _processResponse(data);
+  }
+
+  // ── Response processing (ortak — planTrip ve sendMessage paylaşır) ─────
+
+  Future<void> _processResponse(Map<String, dynamic> data) async {
+    final replyText = data['message'] as String? ?? '';
+    final mapData = data['map'] as Map<String, dynamic>? ?? {};
+    final overlay = data['poi_overlay'] as Map<String, dynamic>?;
+    final dist = (data['distance_km'] as num?)?.toDouble();
+
+    // ── Polylines ────────────────────────────────────────────────────
+    final newPolylines = <Polyline>{};
+    final polyStr = mapData['polyline'] as String?;
+    if (polyStr != null && polyStr.isNotEmpty) {
+      final pts = _processPolyline(polyStr);
+      if (pts.isNotEmpty) {
+        newPolylines.add(Polyline(
+          polylineId: const PolylineId('active'),
+          points: pts,
+          color: AppTheme.accent,
+          width: 5,
+          startCap: Cap.roundCap,
+          endCap: Cap.roundCap,
+          jointType: JointType.round,
+          zIndex: 10,
+        ));
+      }
+
+      final alts = mapData['alternatives'] as List<dynamic>? ?? [];
+      for (int i = 0; i < alts.length; i++) {
+        final aPts = _processPolyline(alts[i] as String);
+        if (aPts.isNotEmpty) {
+          newPolylines.add(Polyline(
+            polylineId: PolylineId('alt_$i'),
+            points: aPts,
+            color: Colors.white.withValues(alpha: 0.25),
+            width: 3,
+            zIndex: 5,
+          ));
+        }
+      }
+    }
+
+    // ── Markers ──────────────────────────────────────────────────────
+    final newMarkers = <Marker>{};
+    final markerList = mapData['markers'] as List<dynamic>? ?? [];
+    for (int i = 0; i < markerList.length; i++) {
+      final m = markerList[i] as Map<String, dynamic>;
+      final lat = (m['lat'] as num).toDouble();
+      final lon = (m['lon'] as num).toDouble();
+      final type = m['type'] as String? ?? 'poi';
+
+      final hue = type == 'pharmacy'
+          ? BitmapDescriptor.hueGreen
+          : type == 'fuel_station'
+              ? BitmapDescriptor.hueOrange
+              : BitmapDescriptor.hueCyan;
+
+      newMarkers.add(Marker(
+        markerId: MarkerId('m_$i'),
+        position: LatLng(lat, lon),
+        infoWindow: InfoWindow(
+          title: m['title'] as String? ?? m['name'] as String? ?? 'Nokta',
+          snippet: m['snippet'] as String? ?? m['address'] as String?,
+        ),
+        icon: BitmapDescriptor.defaultMarkerWithHue(hue),
+        onTap: () => ref.read(selectedPoiProvider.notifier).setPoi(m),
+      ));
+    }
+
+    state = state.copyWith(
+      messages: [
+        ...state.messages,
+        ChatMessage(text: replyText, isAi: true),
+      ],
+      isLoading: false,
+      markers: newMarkers.isNotEmpty ? newMarkers : state.markers,
+      polylines: newPolylines.isNotEmpty ? newPolylines : state.polylines,
+      poiOverlay: overlay,
+      distanceKm: dist ?? state.distanceKm,
+    );
   }
 
   void _addError(String msg) {
