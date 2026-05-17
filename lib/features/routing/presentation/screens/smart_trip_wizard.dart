@@ -1,6 +1,7 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../hub/providers/chat_provider.dart';
@@ -99,24 +100,40 @@ class _SmartTripWizardState extends ConsumerState<SmartTripWizard>
     }
   }
 
-  void _submit() {
+  Future<void> _submit() async {
     final dest = _destCtrl.text.trim();
     final waypoints = _waypointCtrl.text.trim().isNotEmpty
         ? _waypointCtrl.text.trim().split(',').map((e) => e.trim()).toList()
         : <String>[];
 
-    context.push('/hub');
-    Future.delayed(const Duration(milliseconds: 400), () {
-      ref.read(chatProvider.notifier).planTrip(
-        destination: dest,
-        waypoints: waypoints,
-        breakIntervalHours: _breakHours,
-        foodPreference: _foodPref,
-        foodLocation: _foodLocation,
-        fuelRemainingKm: _fuelRemainingKm,
-        customNote: _noteCtrl.text.trim(),
+    // GPS'i planTrip'ten önce kesinleştir
+    try {
+      final pos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 5),
+        ),
       );
-    });
+      if (mounted) {
+        ref.read(chatProvider.notifier).updateCurrentLocation(pos.latitude, pos.longitude);
+      }
+    } catch (_) {
+      // İzin yoksa veya timeout olursa mevcut konumla devam et
+    }
+
+    if (!mounted) return;
+    context.push('/hub');
+
+    await Future.delayed(const Duration(milliseconds: 400));
+    ref.read(chatProvider.notifier).planTrip(
+      destination: dest,
+      waypoints: waypoints,
+      breakIntervalHours: _breakHours,
+      foodPreference: _foodPref,
+      foodLocation: _foodLocation,
+      fuelRemainingKm: _fuelRemainingKm,
+      customNote: _noteCtrl.text.trim(),
+    );
   }
 
   void _showSnack(String msg) {

@@ -209,22 +209,27 @@ class _HubScreenState extends ConsumerState<HubScreen>
               child: Row(children: [
                 _GlassBtn(icon: Icons.menu, onTap: () => _scaffoldKey.currentState?.openDrawer()),
                 const Spacer(),
-                AnimatedBuilder(
-                  animation: _pulse,
-                  builder: (_, __) => Row(mainAxisSize: MainAxisSize.min, children: [
-                    Container(
-                      width: 8, height: 8,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: AppTheme.accent.withValues(alpha: 0.4 + _pulse.value * 0.6),
-                        boxShadow: [BoxShadow(color: AppTheme.accent.withValues(alpha: 0.5), blurRadius: 8)],
+                Flexible(
+                  child: AnimatedBuilder(
+                    animation: _pulse,
+                    builder: (_, __) => Row(mainAxisSize: MainAxisSize.min, children: [
+                      Container(
+                        width: 8, height: 8,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: AppTheme.accent.withValues(alpha: 0.4 + _pulse.value * 0.6),
+                          boxShadow: [BoxShadow(color: AppTheme.accent.withValues(alpha: 0.5), blurRadius: 8)],
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 8),
-                    const Text('GeoIntel',
-                        style: TextStyle(color: AppTheme.textPrimary, fontSize: 18,
-                            fontWeight: FontWeight.bold, letterSpacing: 1)),
-                  ]),
+                      const SizedBox(width: 8),
+                      Flexible(
+                        child: Text('GeoIntel',
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(color: AppTheme.textPrimary, fontSize: 18,
+                                fontWeight: FontWeight.bold, letterSpacing: 1)),
+                      ),
+                    ]),
+                  ),
                 ),
                 const Spacer(),
                 _GlassBtn(icon: Icons.person_outline, onTap: () => context.push('/profile')),

@@ -22,6 +22,10 @@ class ChatState {
   final Set<Polyline> polylines;
   final Map<String, dynamic>? poiOverlay;
   final double? distanceKm;
+  final int? durationMin;
+  final String? etaDisplay;
+  final Map<String, dynamic>? tollInfo;
+  final List<dynamic> weatherWarnings;
 
   const ChatState({
     this.messages = const [],
@@ -30,6 +34,10 @@ class ChatState {
     this.polylines = const {},
     this.poiOverlay,
     this.distanceKm,
+    this.durationMin,
+    this.etaDisplay,
+    this.tollInfo,
+    this.weatherWarnings = const [],
   });
 
   ChatState copyWith({
@@ -39,13 +47,21 @@ class ChatState {
     Set<Polyline>? polylines,
     Map<String, dynamic>? poiOverlay,
     double? distanceKm,
+    int? durationMin,
+    String? etaDisplay,
+    Map<String, dynamic>? tollInfo,
+    List<dynamic>? weatherWarnings,
   }) => ChatState(
     messages: messages ?? this.messages,
     isLoading: isLoading ?? this.isLoading,
     markers: markers ?? this.markers,
     polylines: polylines ?? this.polylines,
-    poiOverlay: poiOverlay, // Don't preserve old overlay, explicit override
+    poiOverlay: poiOverlay,
     distanceKm: distanceKm ?? this.distanceKm,
+    durationMin: durationMin ?? this.durationMin,
+    etaDisplay: etaDisplay ?? this.etaDisplay,
+    tollInfo: tollInfo,
+    weatherWarnings: weatherWarnings ?? this.weatherWarnings,
   );
 }
 
@@ -229,7 +245,14 @@ class ChatNotifier extends Notifier<ChatState> {
     final replyText = data['message'] as String? ?? '';
     final mapData = data['map'] as Map<String, dynamic>? ?? {};
     final overlay = data['poi_overlay'] as Map<String, dynamic>?;
+    final tripPlan = data['trip_plan'] as Map<String, dynamic>?;
+    final routeSummary = (overlay?['route_summary']) as Map<String, dynamic>?;
+
     final dist = (data['distance_km'] as num?)?.toDouble();
+    final durationMin = (data['duration_min'] as num?)?.toInt();
+    final etaDisplay = (tripPlan?['eta_display'] ?? routeSummary?['eta_display']) as String?;
+    final tollInfo = (tripPlan?['toll_info'] ?? routeSummary?['toll']) as Map<String, dynamic>?;
+    final weatherWarnings = (overlay?['weather_warnings'] as List<dynamic>?) ?? [];
 
     // ── Polylines ────────────────────────────────────────────────────
     final newPolylines = <Polyline>{};
@@ -301,7 +324,20 @@ class ChatNotifier extends Notifier<ChatState> {
       polylines: newPolylines.isNotEmpty ? newPolylines : state.polylines,
       poiOverlay: overlay,
       distanceKm: dist ?? state.distanceKm,
+      durationMin: durationMin ?? state.durationMin,
+      etaDisplay: etaDisplay ?? state.etaDisplay,
+      tollInfo: tollInfo,
+      weatherWarnings: weatherWarnings.isNotEmpty ? weatherWarnings : state.weatherWarnings,
     );
+
+    if (dist != null || durationMin != null) {
+      ref.read(activeRouteInfoProvider.notifier).setRoute({
+        'distance': dist ?? state.distanceKm,
+        'duration': durationMin ?? state.durationMin,
+        'eta': etaDisplay,
+        'toll': tollInfo,
+      });
+    }
   }
 
   void _addError(String msg) {

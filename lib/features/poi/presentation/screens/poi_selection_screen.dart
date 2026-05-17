@@ -73,6 +73,7 @@ class _PoiSelectionScreenState extends ConsumerState<PoiSelectionScreen>
   Set<int> get _currentSelected => _selectedBySection[_currentSectionIndex]!;
   bool get _isFood => (_currentSection['type'] as String?) == 'food';
   bool get _isFuel => (_currentSection['type'] as String?) == 'fuel';
+  bool get _isBreak => (_currentSection['type'] as String?) == 'break';
   bool get _isLastSection => _currentSectionIndex == _sections.length - 1;
 
   void _toggleCard(int index) {
@@ -80,7 +81,7 @@ class _PoiSelectionScreenState extends ConsumerState<PoiSelectionScreen>
       if (_currentSelected.contains(index)) {
         _currentSelected.remove(index);
       } else {
-        // Yemek için tekil seçim (max 1), yakıt için çoklu
+        // Yemek ve mola için tekil seçim (max 1), yakıt için çoklu
         if (_isFood) {
           _currentSelected.clear();
         }
@@ -124,7 +125,11 @@ class _PoiSelectionScreenState extends ConsumerState<PoiSelectionScreen>
             'lon': card['lon'],
             'name': card['name'] ?? 'Durak',
             'address': card['address'] ?? '',
-            'type': sec['type'] == 'fuel' ? 'fuel_station' : 'poi',
+            'type': sec['type'] == 'fuel'
+                ? 'fuel_station'
+                : sec['type'] == 'break'
+                    ? 'break_stop'
+                    : 'poi',
           });
         }
       }
@@ -200,6 +205,12 @@ class _PoiSelectionScreenState extends ConsumerState<PoiSelectionScreen>
             // ── Step dots ──────────────────────────────────────────────────
             if (_sections.length > 1) _buildStepDots(),
 
+            // ── Weather warnings ───────────────────────────────────────────
+            Builder(builder: (_) {
+              final warnings = (widget.overlayData?['weather_warnings'] as List<dynamic>?) ?? [];
+              return warnings.isNotEmpty ? _buildWeatherBanner(warnings) : const SizedBox.shrink();
+            }),
+
             // ── Cards list ─────────────────────────────────────────────────
             Expanded(
               child: SlideTransition(
@@ -225,7 +236,7 @@ class _PoiSelectionScreenState extends ConsumerState<PoiSelectionScreen>
   }
 
   Widget _buildHeader(String type, String title, String subtitle, int? targetKm) {
-    final icon = type == 'food' ? '🍽️' : type == 'fuel' ? '⛽' : '📍';
+    final icon = type == 'food' ? '🍽️' : type == 'fuel' ? '⛽' : type == 'break' ? '☕' : '📍';
     return ClipRRect(
       child: BackdropFilter(
         filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
@@ -521,13 +532,15 @@ class _PoiSelectionScreenState extends ConsumerState<PoiSelectionScreen>
 
     String primaryLabel;
     if (_isSubmitting) {
-      primaryLabel = 'Rotaya Ekleniyor...';
+      primaryLabel = 'Hesaplanıyor...';
     } else if (selCount == 0) {
       primaryLabel = isLast ? 'Geç / Tamamla' : 'Geç';
     } else if (isLast) {
-      primaryLabel = 'Rotama Ekle ($selCount)';
+      primaryLabel = 'Tamamla ($selCount seçildi)';
     } else {
-      primaryLabel = isFood ? 'Yemeği Seç ve Devam Et' : 'Ekle ve Devam Et';
+      primaryLabel = _isFood
+          ? 'Yemeği Seç ve Devam Et'
+          : 'Ekle ve Devam Et';
     }
 
     return ClipRRect(
@@ -550,7 +563,9 @@ class _PoiSelectionScreenState extends ConsumerState<PoiSelectionScreen>
                   Text(
                     isFood
                         ? '1 yemek durağı seçildi'
-                        : '$selCount istasyon seçildi',
+                        : _isBreak
+                            ? '$selCount mola noktası seçildi'
+                            : '$selCount istasyon seçildi',
                     style: TextStyle(color: AppTheme.accent, fontSize: 13, fontWeight: FontWeight.w500),
                   ),
                   const Spacer(),
@@ -580,7 +595,7 @@ class _PoiSelectionScreenState extends ConsumerState<PoiSelectionScreen>
                             child: CircularProgressIndicator(
                                 color: Colors.black, strokeWidth: 2.5)),
                         const SizedBox(width: 10),
-                        const Text('Rotaya Ekleniyor...',
+                        const Text('Mola noktaları hesaplanıyor...',
                             style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
                       ])
                     : Text(primaryLabel,
@@ -611,8 +626,36 @@ class _PoiSelectionScreenState extends ConsumerState<PoiSelectionScreen>
       final type = next['type'] as String? ?? '';
       if (type == 'fuel') return 'Sonra: Yakıt durağı ⛽';
       if (type == 'food') return 'Sonra: Yemek durağı 🍽️';
+      if (type == 'break') return 'Sonra: Mola noktası ☕';
     }
     return '';
+  }
+
+  Widget _buildWeatherBanner(List<dynamic> warnings) {
+    final first = warnings.first as Map<String, dynamic>;
+    final severity = first['severity'] as String? ?? 'warning';
+    final color = severity == 'critical' ? Colors.red : severity == 'info' ? Colors.green : Colors.orange;
+    final message = first['message'] as String? ?? 'Kötü hava koşulları mevcut';
+    final label = warnings.length > 1 ? '$message (+${warnings.length - 1} bölge)' : message;
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withValues(alpha: 0.3)),
+      ),
+      child: Row(children: [
+        Icon(Icons.cloud_outlined, color: color, size: 18),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            label,
+            style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w500),
+          ),
+        ),
+      ]),
+    );
   }
 }
 
